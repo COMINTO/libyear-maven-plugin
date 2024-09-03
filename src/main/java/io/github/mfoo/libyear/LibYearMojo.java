@@ -27,6 +27,9 @@ import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -53,6 +56,7 @@ import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.util.EntityUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.versioning.ArtifactVersion;
+import org.apache.maven.artifact.versioning.OverConstrainedVersionException;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.model.Dependency;
 import org.apache.maven.plugin.AbstractMojo;
@@ -149,6 +153,19 @@ public class LibYearMojo extends AbstractMojo {
      */
     @Parameter(property = "maxLibYears", defaultValue = "0.0")
     private float maxLibYears;
+
+    /**
+     * Path to the report file, if empty no report file will be generated.
+     */
+    @Parameter(property = "reportFile")
+    private String reportFile;
+
+    /**
+     * Whether the dependency should be included in the report. If it is set to "0", all dependencies will be included,
+     * otherwise only dependencies older than the specified number of years will be included.
+     */
+    @Parameter(property = "minLibYearsForReport", defaultValue = "0.0")
+    private float minLibYearsForReport;
 
     /**
      * Only take these artifacts into consideration.
@@ -431,6 +448,8 @@ public class LibYearMojo extends AbstractMojo {
                         "Dependencies",
                         getLog());
 
+                generateReport(dependencies);
+
                 // Log anything that's left
                 thisProjectLibYearsOutdated += processDependencyUpdates(
                         getHelper().lookupDependenciesUpdates(dependencies.stream(), false, false), "Dependencies");
@@ -488,6 +507,60 @@ public class LibYearMojo extends AbstractMojo {
             projectAges.put(project.getName(), thisProjectLibYearsOutdated);
         } catch (Exception e) {
             throw new MojoExecutionException(e.getMessage(), e);
+        }
+    }
+
+    private void generateReport(Set<Dependency> dependencies) {
+        if (StringUtils.isNotBlank(reportFile)) {
+
+            StringBuilder logsToReport = new StringBuilder("All dependencies older than ")
+                    .append(minLibYearsForReport)
+                    .append(" libyears:")
+                    .append(System.lineSeparator())
+                    .append(System.lineSeparator());
+
+            dependencies.stream().forEach(dependency -> {
+                try {
+                    Artifact artifact = getHelper().createDependencyArtifact(dependency);
+
+                    Optional<LocalDate> currentReleaseDate = getReleaseDate(
+                            artifact.getGroupId(),
+                            artifact.getArtifactId(),
+                            artifact.getSelectedVersion().toString());
+
+                    if (!currentReleaseDate.isEmpty()) {
+                        long libWeeksOutdated = ChronoUnit.WEEKS.between(currentReleaseDate.get(), LocalDate.now());
+                        float libYearsOutdated = libWeeksOutdated / 52f;
+
+                        if (libYearsOutdated > 0
+                                && (minLibYearsForReport <= 0 || libYearsOutdated > minLibYearsForReport)) {
+                            String libYearsStr = String.format(" %.2f libyears", libYearsOutdated);
+                            String depName = dependency.getGroupId() + ":" + dependency.getArtifactId() + ": "
+                                    + dependency.getVersion() + " ";
+
+                            if ((depName.length() + libYearsStr.length()) > INFO_PAD_SIZE) {
+                                logsToReport
+                                        .append(depName)
+                                        .append(System.lineSeparator())
+                                        .append(StringUtils.rightPad("  ", INFO_PAD_SIZE - libYearsStr.length(), "."));
+                            } else {
+                                logsToReport.append(
+                                        StringUtils.rightPad(depName, INFO_PAD_SIZE - libYearsStr.length(), "."));
+                            }
+                            logsToReport.append(libYearsStr).append(System.lineSeparator());
+                        }
+                    }
+                } catch (MojoExecutionException | OverConstrainedVersionException e) {
+                    getLog().debug("Exception by writing report", e);
+                }
+            });
+            Path path = Paths.get(reportFile);
+
+            try {
+                Files.write(path, logsToReport.toString().getBytes());
+            } catch (IOException e) {
+                getLog().error("Failed to write report file: " + reportFile, e);
+            }
         }
     }
 
