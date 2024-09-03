@@ -30,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -513,11 +514,16 @@ public class LibYearMojo extends AbstractMojo {
     private void generateReport(Set<Dependency> dependencies) {
         if (StringUtils.isNotBlank(reportFile)) {
 
-            StringBuilder logsToReport = new StringBuilder("All dependencies older than ")
-                    .append(minLibYearsForReport)
-                    .append(" libyears:")
-                    .append(System.lineSeparator())
-                    .append(System.lineSeparator());
+            StringBuilder logsToReport = new StringBuilder();
+
+            if (!Paths.get(reportFile).toFile().exists()) {
+                logsToReport
+                        .append("All dependencies older than ")
+                        .append(minLibYearsForReport)
+                        .append(" libyears:")
+                        .append(System.lineSeparator())
+                        .append(System.lineSeparator());
+            }
 
             dependencies.stream().forEach(dependency -> {
                 try {
@@ -528,6 +534,8 @@ public class LibYearMojo extends AbstractMojo {
                             artifact.getArtifactId(),
                             artifact.getSelectedVersion().toString());
 
+                    String depName = dependency.getGroupId() + ":" + dependency.getArtifactId() + ": "
+                            + dependency.getVersion() + " ";
                     if (!currentReleaseDate.isEmpty()) {
                         long libWeeksOutdated = ChronoUnit.WEEKS.between(currentReleaseDate.get(), LocalDate.now());
                         float libYearsOutdated = libWeeksOutdated / 52f;
@@ -535,33 +543,36 @@ public class LibYearMojo extends AbstractMojo {
                         if (libYearsOutdated > 0
                                 && (minLibYearsForReport <= 0 || libYearsOutdated > minLibYearsForReport)) {
                             String libYearsStr = String.format(" %.2f libyears", libYearsOutdated);
-                            String depName = dependency.getGroupId() + ":" + dependency.getArtifactId() + ": "
-                                    + dependency.getVersion() + " ";
-
-                            if ((depName.length() + libYearsStr.length()) > INFO_PAD_SIZE) {
-                                logsToReport
-                                        .append(depName)
-                                        .append(System.lineSeparator())
-                                        .append(StringUtils.rightPad("  ", INFO_PAD_SIZE - libYearsStr.length(), "."));
-                            } else {
-                                logsToReport.append(
-                                        StringUtils.rightPad(depName, INFO_PAD_SIZE - libYearsStr.length(), "."));
-                            }
-                            logsToReport.append(libYearsStr).append(System.lineSeparator());
+                            addToReport(depName, libYearsStr, logsToReport);
                         }
+                    } else {
+                        addToReport(depName, "unknown", logsToReport);
                     }
                 } catch (MojoExecutionException | OverConstrainedVersionException e) {
-                    getLog().debug("Exception by writing report", e);
+                    getLog().error("Exception by writing report", e);
                 }
             });
             Path path = Paths.get(reportFile);
 
             try {
-                Files.write(path, logsToReport.toString().getBytes());
+                Files.write(
+                        path, logsToReport.toString().getBytes(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             } catch (IOException e) {
                 getLog().error("Failed to write report file: " + reportFile, e);
             }
         }
+    }
+
+    private static void addToReport(String depName, String libYearsStr, StringBuilder logsToReport) {
+        if ((depName.length() + libYearsStr.length()) > INFO_PAD_SIZE) {
+            logsToReport
+                    .append(depName)
+                    .append(System.lineSeparator())
+                    .append(StringUtils.rightPad("  ", INFO_PAD_SIZE - libYearsStr.length(), "."));
+        } else {
+            logsToReport.append(StringUtils.rightPad(depName, INFO_PAD_SIZE - libYearsStr.length(), "."));
+        }
+        logsToReport.append(libYearsStr).append(System.lineSeparator());
     }
 
     private VersionsHelper getHelper() throws MojoExecutionException {
